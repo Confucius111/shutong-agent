@@ -27,8 +27,10 @@ st.title("📚 书童 - 经典文学导读助手")
 st.caption("您的专属数智阅读伴侣 | 云端安全版 | 多源知识库自动装载")
 
 HISTORY_FILE = "chat_history.json"
-DATA_DIR = "."          # 知识库所在目录（GitHub 仓库根目录）
-TXT_GLOB = "*.txt"      # 自动扫描的扩展名模式
+
+# ⭐ 关键修改：指向你截图中的 shutong_data 文件夹
+DATA_DIR = "shutong_data" 
+TXT_GLOB = "*.txt"      
 
 # ==========================================
 # 2. 初始化大模型（Secrets 安全读取）
@@ -52,7 +54,7 @@ client = OpenAI(
 # 3. 扫描知识库目录
 # ==========================================
 def scan_txt_files():
-    """返回当前目录（或 DATA_DIR）下所有 .txt 文件路径，按文件名排序。"""
+    """返回 shutong_data 目录下所有 .txt 文件路径"""
     pattern = os.path.join(DATA_DIR, TXT_GLOB)
     return sorted(glob.glob(pattern))
 
@@ -68,15 +70,13 @@ with st.sidebar:
         st.success("✅ 已成功加载云端知识库")
         st.write("当前知识库包含：")
         for file in txt_files:
-            # 只显示文件名，避免显示完整路径
             st.write(f"- 📄 {os.path.basename(file)}")
     else:
-        st.warning("⚠️ 未在仓库中找到任何 .txt 文件")
+        st.warning(f"⚠️ 未在 {DATA_DIR} 文件夹中找到任何 .txt 文件")
 
     st.divider()
 
     if st.button("🔄 重建知识库（重新切片）", use_container_width=True):
-        # 手动触发重建：清空缓存，强制下次 rerun 重新读文件
         st.session_state.pop("chunks", None)
         st.session_state.pop("kb_files", None)
         st.rerun()
@@ -98,13 +98,12 @@ if "chunks" not in st.session_state:
     all_raw_text = ""
 
     if not txt_files:
-        st.error("❌ 未找到任何 TXT 知识库文件，请检查 GitHub 仓库是否已上传文本。")
+        st.error(f"❌ 未找到任何 TXT 知识库文件，请检查 {DATA_DIR} 文件夹！")
     else:
         with st.spinner("📚 正在自动装载知识库文件..."):
             for file_path in txt_files:
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        # 加文件名标记 + 换行，防止不同文件内容粘连
                         all_raw_text += (
                             f"\n\n【文件：{os.path.basename(file_path)}】\n"
                             + f.read()
@@ -142,17 +141,16 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # ==========================================
-# 8. 检索函数（关键词加权 + 长词加权）
+# 8. 检索函数
 # ==========================================
 STOP_WORDS = set(
     "，。？！；：、“”‘’（）《》【】…—的了吗呢吧啊是在和有就都也不人一个上很到说要去你会着没有看好自己这"
     "什么样 怎么 什么 帮我 查一下 书童 请问 整本书 里".split()
 )
 
-
 def retrieve_context(query: str, chunks, top_k: int = 5) -> str:
     if not chunks:
-        return "知识库为空，请先在 GitHub 仓库上传 TXT 文献。"
+        return "知识库为空，请确认数据文件。"
 
     tokens, buf = [], ""
     for ch in query:
@@ -182,9 +180,8 @@ def retrieve_context(query: str, chunks, top_k: int = 5) -> str:
     top = [s for s in scored[:top_k] if s[0] > 0] or scored[:3]
     return "\n\n...\n\n".join(c[2] for c in top)
 
-
 # ==========================================
-# 9. 核心对话（支持连续追问）
+# 9. 核心对话
 # ==========================================
 if prompt := st.chat_input("向书童提问，例如：林黛玉是一个什么样性格的人？"):
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -197,14 +194,13 @@ if prompt := st.chat_input("向书童提问，例如：林黛玉是一个什么�
             context = retrieve_context(prompt, st.session_state.chunks)
 
             system_prompt = f"""
-你现在是名为"书童"的AI《红楼梦》导读助手，面向读者进行经典文学导读。
+你现在是名为"书童"的AI《红楼梦》导读助手。
 请严格依据【参考资料】回答读者提问。
 
 【任务要求】：
 1. 如果用户询问人物性格、情节分析等，请综合提炼材料中的信息，进行合理总结与推理。
 2. 如果材料提到某人但未直接写"性格"，请从事迹推断，不要回答"未提及"。
 3. 若资料含古文，请附带白话文翻译。
-4. 如果【参考资料】与问题无关，请礼貌说明知识库中暂无相关内容，并建议补充对应章节文本。
 
 【参考资料】：
 {context}
