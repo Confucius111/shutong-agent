@@ -27,13 +27,11 @@ st.title("📚 书童 - 经典文学导读助手")
 st.caption("您的专属数智阅读伴侣 | 云端安全版 | 多源知识库自动装载")
 
 HISTORY_FILE = "chat_history.json"
-
-# ⭐ 关键修改：指向你截图中的 shutong_data 文件夹
 DATA_DIR = "shutong_data" 
 TXT_GLOB = "*.txt"      
 
 # ==========================================
-# 2. 初始化大模型（Secrets 安全读取）
+# 2. 初始化大模型
 # ==========================================
 try:
     DEEPSEEK_API_KEY = st.secrets["DEEPSEEK_API_KEY"]
@@ -51,17 +49,16 @@ client = OpenAI(
 )
 
 # ==========================================
-# 3. 扫描知识库目录
+# 3. 扫描目录
 # ==========================================
 def scan_txt_files():
-    """返回 shutong_data 目录下所有 .txt 文件路径"""
     pattern = os.path.join(DATA_DIR, TXT_GLOB)
     return sorted(glob.glob(pattern))
 
 txt_files = scan_txt_files()
 
 # ==========================================
-# 4. 侧边栏：控制台
+# 4. 侧边栏
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 书童的控制台")
@@ -76,9 +73,9 @@ with st.sidebar:
 
     st.divider()
 
-    if st.button("🔄 重建知识库（重新切片）", use_container_width=True):
-        st.session_state.pop("chunks", None)
-        st.session_state.pop("kb_files", None)
+    if st.button("🔄 重建知识库", use_container_width=True):
+        # 强制清除所有缓存
+        st.session_state.clear()
         st.rerun()
 
     if st.button("🗑️ 清空当前对话", use_container_width=True):
@@ -91,34 +88,44 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 5. 自动读取所有 TXT 文件并构建知识库
+# 5. 自动读取并构建【双轨知识库】（终极优化）
 # ==========================================
-if "chunks" not in st.session_state:
-    st.session_state.chunks = []
-    all_raw_text = ""
+if "chunks_original" not in st.session_state or "chunks_modern" not in st.session_state:
+    st.session_state.chunks_original = []  # 文言文
+    st.session_state.chunks_modern = []    # 白话文
+    st.session_state.chunks_relation = []  # 关系图
+    st.session_state.chunks = []           # 总库
 
     if not txt_files:
         st.error(f"❌ 未找到任何 TXT 知识库文件，请检查 {DATA_DIR} 文件夹！")
     else:
-        with st.spinner("📚 正在自动装载知识库文件..."):
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+        
+        with st.spinner("📚 正在自动分类装载知识库..."):
             for file_path in txt_files:
+                file_name = os.path.basename(file_path)
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        all_raw_text += (
-                            f"\n\n【文件：{os.path.basename(file_path)}】\n"
-                            + f.read()
-                        )
+                        content = f.read()
+                        if not content.strip(): continue
+                        
+                        chunks = text_splitter.split_text(content)
+                        
+                        # 严格分类
+                        if "人物关系" in file_name:
+                            st.session_state.chunks_relation.extend(chunks)
+                        elif "白话" in file_name:
+                            st.session_state.chunks_modern.extend(chunks)
+                        else:
+                            st.session_state.chunks_original.extend(chunks)
+                            
                 except Exception as e:
-                    st.warning(f"读取 {file_path} 失败：{e}")
-
-            if all_raw_text.strip():
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=600, chunk_overlap=100
-                )
-                st.session_state.chunks = text_splitter.split_text(all_raw_text)
-                st.session_state.kb_files = [os.path.basename(f) for f in txt_files]
-            else:
-                st.error("❌ 读取到的内容为空，请检查 TXT 文件是否为空或编码异常。")
+                    st.warning(f"读取 {file_name} 失败：{e}")
+            
+            # 合并供备用（截取前 1500 块防卡顿）
+            st.session_state.chunks = st.session_state.chunks_relation + st.session_state.chunks_modern[:1500] + st.session_state.chunks_original[:1500]
+            if not st.session_state.chunks:
+                st.error("❌ 文件读取后内容为空，请检查 TXT 编码。")
 
 # ==========================================
 # 6. 初始化聊天记忆
@@ -141,44 +148,39 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # ==========================================
-# 8. 检索函数
+# 8. 检索函数（双字滑窗 + 权重分配）
 # ==========================================
-STOP_WORDS = set(
-    "，。？！；：、“”‘’（）《》【】…—的了吗呢吧啊是在和有就都也不人一个上很到说要去你会着没有看好自己这"
-    "什么样 怎么 什么 帮我 查一下 书童 请问 整本书 里".split()
-)
+def retrieve_context(query: str, top_k: int = 4) -> str:
+    if not st.session_state.chunks:
+        return "知识库为空。"
 
-def retrieve_context(query: str, chunks, top_k: int = 5) -> str:
-    if not chunks:
-        return "知识库为空，请确认数据文件。"
+    tokens = []
+    for i in range(len(query) - 1):
+        word = query[i:i+2]
+        if all("\u4e00" <= ch <= "\u9fff" for ch in word):
+            tokens.append(word)
+            
+    if not tokens: return "\n\n...\n\n".join(st.session_state.chunks[:3])
 
-    tokens, buf = [], ""
-    for ch in query:
-        if "\u4e00" <= ch <= "\u9fff":
-            if buf:
-                tokens.append(buf); buf = ""
-            if ch not in STOP_WORDS:
-                tokens.append(ch)
-        elif ch.isalnum():
-            buf += ch
-        else:
-            if buf:
-                tokens.append(buf); buf = ""
-    if buf:
-        tokens.append(buf)
+    def get_top_chunks(chunk_list, weight=1):
+        scored = []
+        for chunk in chunk_list:
+            score = sum(weight for t in tokens if t in chunk)
+            if score > 0: scored.append((score, chunk))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [s[1] for s in scored[:top_k]]
 
-    tokens = [t for t in tokens if t and t not in STOP_WORDS]
-    if not tokens:
-        tokens = [query]
+    # 白话文权重 2，关系库权重 2，文言文权重 1（确保优先理解白话文）
+    modern_results = get_top_chunks(st.session_state.chunks_modern, weight=2)
+    relation_results = get_top_chunks(st.session_state.chunks_relation, weight=2)
+    original_results = get_top_chunks(st.session_state.chunks_original, weight=1)
 
-    scored = []
-    for i, chunk in enumerate(chunks):
-        score = sum(chunk.count(t) * (len(t) + 1) for t in tokens)
-        scored.append((score, i, chunk))
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    top = [s for s in scored[:top_k] if s[0] > 0] or scored[:3]
-    return "\n\n...\n\n".join(c[2] for c in top)
+    combined = list(dict.fromkeys(modern_results + relation_results + original_results))
+    
+    if not combined:
+        return "\n\n...\n\n".join(st.session_state.chunks[:3])
+        
+    return "\n\n...\n\n".join(combined[:top_k])
 
 # ==========================================
 # 9. 核心对话
@@ -191,16 +193,18 @@ if prompt := st.chat_input("向书童提问，例如：林黛玉是一个什么�
     with st.chat_message("assistant"):
         placeholder = st.empty()
         with st.spinner("🧠 书童正在全书中进行深度语义检索..."):
-            context = retrieve_context(prompt, st.session_state.chunks)
+            # 使用新版检索
+            context = retrieve_context(prompt)
 
+            # 优化后的系统提示词
             system_prompt = f"""
 你现在是名为"书童"的AI《红楼梦》导读助手。
 请严格依据【参考资料】回答读者提问。
 
 【任务要求】：
 1. 如果用户询问人物性格、情节分析等，请综合提炼材料中的信息，进行合理总结与推理。
-2. 如果材料提到某人但未直接写"性格"，请从事迹推断，不要回答"未提及"。
-3. 若资料含古文，请附带白话文翻译。
+2. 参考资料中可能包含白话文和文言文，请优先使用白话文的叙述，如果引用了古文，请附带白话文翻译。
+3. 如果材料未直接提及，请尝试利用《红楼梦》的常识进行合理推断，不要轻易回答“未提及”。
 
 【参考资料】：
 {context}
