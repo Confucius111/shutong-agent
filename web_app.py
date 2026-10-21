@@ -1,7 +1,7 @@
 import os
 import sys
 
-# 【核心修复】：强制系统使用 UTF-8 编码，解决中文乱码和 ascii 报错
+# 强制系统使用 UTF-8 编码，解决中文乱码和 ascii 报错
 sys.stdin.reconfigure(encoding='utf-8')
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -16,13 +16,17 @@ from openai import OpenAI
 # ==========================================
 st.set_page_config(page_title="书童 - 经典文学导读助手", page_icon="📚", layout="wide")
 st.title("📚 书童 - 经典文学导读助手")
-st.caption("您的专属数智阅读伴侣 | 极速演示版")
+st.caption("您的专属数智阅读伴侣 | 云端安全版")
 
 # ==========================================
-# 2. 初始化大模型
+# 2. 初始化大模型 (使用 Secrets 安全读取)
 # ==========================================
-# ⚠️ 把下面引号里的内容，换成你刚才在 DeepSeek 申请的 sk- 开头的密钥！
-DEEPSEEK_API_KEY = "DEEPSEEK_API_KEY" 
+try:
+    # 从云端 Streamlit Secrets 中读取密钥
+    DEEPSEEK_API_KEY = st.secrets["DEEPSEEK_API_KEY"]
+except Exception:
+    # 如果在本地运行且没配 secrets，做个防崩溃兜底
+    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "未配置密钥")
 
 client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
